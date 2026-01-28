@@ -1,6 +1,7 @@
 #include "intercalacao.h"
 #include <stdbool.h>
 
+// Estruturas auxiliares p/ gerenciar registros e fitas
 typedef struct {
     TipoRegistro reg;
     bool marcado;
@@ -13,23 +14,23 @@ typedef struct {
     bool blocoAcabou;
 } ControleFita;
 
+// Metodo 1: Intercalação Balanceada 2f (20 fitas)
 void metodo1(FILE *arqPrincipal, int n, AnaliseExperimental *analise) {
     FILE *fitas[20];
     char nomeFita[30];
 
-    // Inicialização: Cria as 20 fitas [cite: 16]
+    // cria as 20 fitas (10 de entrada, 10 de saida)
     for (int i = 0; i < 20; i++) {
         sprintf(nomeFita, "fita%d.bin", i + 1);
         fitas[i] = fopen(nomeFita, "w+b");
     }
 
-    // ========================================================
-    // PASSO 1: SELEÇÃO POR SUBSTITUIÇÃO
-    // ========================================================
+    // PASSO 1: Seleção por Substituição p/ gerar blocos iniciais
     rewind(arqPrincipal);
-    TipoNo memoria[10]; // Limite de 10 registros [cite: 16]
+    TipoNo memoria[10]; // RAM limitada a 10 registros
     int lidos = 0, tamMemoria = 0, fitaAtual = 0;
 
+    // carrega a memoria inicial
     for (int i = 0; i < 10 && lidos < n; i++) {
         if (fread(&memoria[i].reg, sizeof(TipoRegistro), 1, arqPrincipal) == 1) {
             memoria[i].marcado = false;
@@ -40,6 +41,7 @@ void metodo1(FILE *arqPrincipal, int n, AnaliseExperimental *analise) {
 
     while (tamMemoria > 0) {
         int menor = -1;
+        // busca o menor registro não marcado na memória
         for (int i = 0; i < tamMemoria; i++) {
             if (!memoria[i].marcado) {
                 if (menor == -1 || (analise->numComparacoes++, memoria[i].reg.nota < memoria[menor].reg.nota))
@@ -47,19 +49,21 @@ void metodo1(FILE *arqPrincipal, int n, AnaliseExperimental *analise) {
             }
         }
 
-        if (menor == -1) { // Bloco atual acabou na fita
+        if (menor == -1) { // se todos estão marcados, o bloco na fita atual acabou
             for (int i = 0; i < tamMemoria; i++) memoria[i].marcado = false;
             fitaAtual = (fitaAtual + 1) % 10;
             continue;
         }
 
+        // escreve o menor na fita e le o proximo do arquivo principal
         fwrite(&memoria[menor].reg, sizeof(TipoRegistro), 1, fitas[fitaAtual]);
         analise->numTransferenciasEscrita++;
         TipoRegistro ultimo = memoria[menor].reg;
 
         if (lidos < n && fread(&memoria[menor].reg, sizeof(TipoRegistro), 1, arqPrincipal) == 1) {
             lidos++; analise->numTransferenciasLeitura++;
-            analise->numComparacoes++; // Comparação do if abaixo
+            analise->numComparacoes++;
+            // se o novo for menor q o ultimo escrito, ele entra no proximo bloco (marcado)
             memoria[menor].marcado = (memoria[menor].reg.nota < ultimo.nota);
         } else {
             memoria[menor] = memoria[tamMemoria - 1];
@@ -67,18 +71,14 @@ void metodo1(FILE *arqPrincipal, int n, AnaliseExperimental *analise) {
         }
     }
 
-    // ========================================================
-    // PASSO 2: INTERCALAÇÃO BALANCEADA (2f)
-    // ========================================================
+    // PASSO 2: Intercalação das fitas
     int entradaIdx = 0, saidaIdx = 10;
     bool ordenado = false;
 
     while (!ordenado) {
-        // 1. Resetar ponteiros de entrada e LIMPAR fitas de saída [cite: 19]
         for (int i = 0; i < 10; i++) {
             rewind(fitas[entradaIdx + i]);
-            // freopen zera o arquivo para a nova rodada de escrita
-            fitas[saidaIdx + i] = freopen(NULL, "w+b", fitas[saidaIdx + i]);
+            fitas[saidaIdx + i] = freopen(NULL, "w+b", fitas[saidaIdx + i]); // limpa fita de saida
         }
 
         ControleFita entrada[10];
@@ -95,7 +95,7 @@ void metodo1(FILE *arqPrincipal, int n, AnaliseExperimental *analise) {
             for (int i = 0; i < 10; i++) if (!entrada[i].vazia) existeDados = true;
             if (!existeDados) break;
 
-            // Intercalação dos blocos atuais das fitas de entrada
+            // intercala os blocos das 10 fitas de entrada
             while (1) {
                 int menor = -1;
                 for (int i = 0; i < 10; i++) {
@@ -112,22 +112,21 @@ void metodo1(FILE *arqPrincipal, int n, AnaliseExperimental *analise) {
 
                 if (fread(&entrada[menor].reg, sizeof(TipoRegistro), 1, entrada[menor].f) == 1) {
                     analise->numTransferenciasLeitura++;
-                    analise->numComparacoes++; // Comparação do if abaixo
+                    analise->numComparacoes++;
                     if (entrada[menor].reg.nota < anterior.nota) entrada[menor].blocoAcabou = true;
                 } else {
                     entrada[menor].vazia = true;
                     entrada[menor].blocoAcabou = true;
                 }
             }
-            // Fim de um bloco intercalado
             fitaSaida = (fitaSaida + 1) % 10;
             blocosNaRodada++;
             for (int i = 0; i < 10; i++) if (!entrada[i].vazia) entrada[i].blocoAcabou = false;
         }
 
+        // se sobrou apenas 1 bloco, o arquivo está pronto
         if (blocosNaRodada <= 1) {
             ordenado = true;
-            // O resultado final está na PRIMEIRA fita de saída da rodada (saidaIdx + 0)
             int fitaVencedora = saidaIdx; 
             rewind(fitas[fitaVencedora]);
             rewind(arqPrincipal);
@@ -138,8 +137,7 @@ void metodo1(FILE *arqPrincipal, int n, AnaliseExperimental *analise) {
                 analise->numTransferenciasLeitura++; analise->numTransferenciasEscrita++;
             }
         } else {
-            // Inverte entrada/saída
-            int tmp = entradaIdx;
+            int tmp = entradaIdx; // inverte entrada e saida p/ a prox rodada
             entradaIdx = saidaIdx;
             saidaIdx = tmp;
         }
@@ -147,7 +145,8 @@ void metodo1(FILE *arqPrincipal, int n, AnaliseExperimental *analise) {
 
     for (int i = 0; i < 20; i++) fclose(fitas[i]);
 }
-// Método 2: Intercalação Balanceada (f+1 fitas)
+
+// Metodo 2: Intercalação Balanceada f+1 (usa 19 de entrada e 1 de saida)
 void metodo2(FILE *arqPrincipal, int n, AnaliseExperimental *analise) {
     FILE *fitas[20];
     char nomeFita[30];
@@ -157,7 +156,7 @@ void metodo2(FILE *arqPrincipal, int n, AnaliseExperimental *analise) {
         fitas[i] = fopen(nomeFita, "w+b");
     }
 
-    // PASSO 1: SELEÇÃO POR SUBSTITUIÇÃO
+    // PASSO 1: Seleção por Substituição (usa 19 espaços de memória aqui)
     rewind(arqPrincipal);
     TipoNo memoria[19]; 
     int lidos = 0, tamMemoria = 0, fitaAtual = 0;
@@ -199,7 +198,7 @@ void metodo2(FILE *arqPrincipal, int n, AnaliseExperimental *analise) {
         }
     }
 
-    // PASSO 2: INTERCALAÇÃO BALANCEADA (f+1)
+    // PASSO 2: Intercalação f+1
     int fitaSaidaIdx = 19; 
     bool ordenado = false;
 
@@ -209,7 +208,6 @@ void metodo2(FILE *arqPrincipal, int n, AnaliseExperimental *analise) {
 
         for (int i = 0, k = 0; i < 20; i++) {
             if (i == fitaSaidaIdx) {
-                // Limpa a fita de saída para receber a nova intercalação
                 sprintf(nomeFita, "fita%d_m2.bin", i + 1);
                 fitas[i] = freopen(nomeFita, "w+b", fitas[i]);
                 continue;
@@ -225,9 +223,8 @@ void metodo2(FILE *arqPrincipal, int n, AnaliseExperimental *analise) {
             k++;
         }
 
-        if (fitasComDados <= 1) {
+        if (fitasComDados <= 1) { // se so sobrou uma fita com dados, acabou
             ordenado = true;
-            // Acha qual fita restou com os dados
             int fitaVencedora = (fitaSaidaIdx == 0) ? 1 : 0; 
             for(int i=0; i<20; i++) {
                 rewind(fitas[i]);
@@ -247,7 +244,7 @@ void metodo2(FILE *arqPrincipal, int n, AnaliseExperimental *analise) {
             break;
         }
 
-        int blocosNaRodada = 0; // <--- AQUI ESTÁ O SEU CONTADOR
+        int blocosNaRodada = 0;
         while (1) {
             bool existeDadosNoBloco = false;
             for (int i = 0; i < 19; i++) if (!entrada[i].vazia) existeDadosNoBloco = true;
@@ -276,14 +273,12 @@ void metodo2(FILE *arqPrincipal, int n, AnaliseExperimental *analise) {
                 }
             }
             
-            blocosNaRodada++; // Incrementa cada vez que termina de intercalar um conjunto de blocos
+            blocosNaRodada++;
             for (int i = 0; i < 19; i++) if (!entrada[i].vazia) entrada[i].blocoAcabou = false;
         }
 
-        // Se na rodada toda só geramos 1 bloco na fita de saída, está ordenado
         if (blocosNaRodada <= 1) {
             ordenado = true;
-            // Copia da fita de saída (que agora é a vencedora) para o principal
             rewind(fitas[fitaSaidaIdx]);
             rewind(arqPrincipal);
             TipoRegistro aux;
@@ -294,7 +289,7 @@ void metodo2(FILE *arqPrincipal, int n, AnaliseExperimental *analise) {
             }
             fflush(arqPrincipal);
         } else {
-            // Define qual será a fita de saída para a próxima rodada (uma que esteja vazia)
+            // define a proxima fita de saida (uma que esteja vazia)
             for (int i = 0; i < 20; i++) {
                 rewind(fitas[i]);
                 TipoRegistro aux;
